@@ -18,14 +18,39 @@ _token_cache = {"token": None, "expires_at": 0}
 
 def _fetch_new_token():
     """Fetch a fresh access token from Zoho and cache it."""
+    client_id     = os.getenv("ZOHO_CLIENT_ID", "")
+    client_secret = os.getenv("ZOHO_CLIENT_SECRET", "")
+    refresh_token = os.getenv("ZOHO_REFRESH_TOKEN", "")
+
+    # Check env vars are set
+    missing = [k for k, v in [
+        ("ZOHO_CLIENT_ID", client_id),
+        ("ZOHO_CLIENT_SECRET", client_secret),
+        ("ZOHO_REFRESH_TOKEN", refresh_token)
+    ] if not v.strip()]
+    if missing:
+        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+
     resp = requests.post("https://accounts.zoho.in/oauth/v2/token", data={
         "grant_type":    "refresh_token",
-        "client_id":     os.getenv("ZOHO_CLIENT_ID"),
-        "client_secret": os.getenv("ZOHO_CLIENT_SECRET"),
-        "refresh_token": os.getenv("ZOHO_REFRESH_TOKEN"),
+        "client_id":     client_id.strip(),
+        "client_secret": client_secret.strip(),
+        "refresh_token": refresh_token.strip(),
     })
-    resp.raise_for_status()
-    token = resp.json()["access_token"]
+
+    if not resp.ok:
+        # Show Zoho's actual error message
+        try:
+            zoho_err = resp.json()
+        except Exception:
+            zoho_err = resp.text
+        raise ValueError(f"Zoho OAuth failed ({resp.status_code}): {zoho_err}")
+
+    data = resp.json()
+    if "access_token" not in data:
+        raise ValueError(f"No access_token in Zoho response: {data}")
+
+    token = data["access_token"]
     _token_cache["token"]      = token
     _token_cache["expires_at"] = datetime.now().timestamp() + 50 * 60
     return token
@@ -670,6 +695,31 @@ function setPreset(p){
 </script>
 </body>
 </html>"""
+
+
+# ── Debug Route ──────────────────────────────────────────────────────────────
+
+@app.route("/debug")
+def debug():
+    cid  = os.getenv("ZOHO_CLIENT_ID", "")
+    csec = os.getenv("ZOHO_CLIENT_SECRET", "")
+    rtok = os.getenv("ZOHO_REFRESH_TOKEN", "")
+
+    lines = ["<pre style='font-family:monospace;padding:30px;font-size:13px;'>"]
+    lines.append("<b>── Env Vars ──</b>")
+    lines.append(f"ZOHO_CLIENT_ID     : {'✅ SET (' + cid[:8] + '...)' if cid.strip() else '❌ MISSING'}")
+    lines.append(f"ZOHO_CLIENT_SECRET : {'✅ SET (' + csec[:6] + '...)' if csec.strip() else '❌ MISSING'}")
+    lines.append(f"ZOHO_REFRESH_TOKEN : {'✅ SET (' + rtok[:8] + '...)' if rtok.strip() else '❌ MISSING'}")
+    lines.append("")
+    lines.append("<b>── Token Test ──</b>")
+    try:
+        _token_cache["token"] = None  # force fresh fetch
+        token = _fetch_new_token()
+        lines.append(f"OAuth Token : ✅ SUCCESS (token starts: {token[:12]}...)")
+    except Exception as e:
+        lines.append(f"OAuth Token : ❌ FAILED\nError: {e}")
+    lines.append("</pre>")
+    return "\n".join(lines)
 
 
 # ── Route ────────────────────────────────────────────────────────────────────
