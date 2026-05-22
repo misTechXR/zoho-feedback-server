@@ -60,25 +60,11 @@ def get_owner_name(r):
     name  = owner.get("name") if isinstance(owner, dict) else "Unassigned"
     return name or "Unassigned"
 
-def normalize_product(name):
-    """Normalize product names to standard groups."""
-    n = name.lower()
-    if "sensexr durlabh darshan combo" in n:
-        return "SenseXR Durlabh Darshan Combo"
-    if "durlabh darshan kit" in n or "durlabh darshan vr headset" in n:
-        return "Durlabh Darshan Kit"
-    if "sensexr controller" in n:
-        return "SenseXR AR-VR Educational Controller"
-    return name  # original name for everything else
-
 def get_product(r):
     p = r.get("Product_Name") or ""
     if isinstance(p, dict):
-        p = p.get("name", "") or ""
-    p = str(p).strip()
-    if not p:
-        return "—"
-    return normalize_product(p)
+        return p.get("name", "") or "—"
+    return str(p).strip() or "—"
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
