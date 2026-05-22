@@ -378,15 +378,15 @@ tr:last-child td{border-bottom:none}
       <div class="filter-row">
         <div class="filter-group">
           <label>📅 Date From</label>
-          <input type="date" name="date_from" id="date_from" value="{{ f_date_from }}">
+          <input type="date" name="date_from" id="date_from" value="{{ f_date_from }}" onchange="autoSubmit()">
         </div>
         <div class="filter-group">
           <label>📅 Date To</label>
-          <input type="date" name="date_to" id="date_to" value="{{ f_date_to }}">
+          <input type="date" name="date_to" id="date_to" value="{{ f_date_to }}" onchange="autoSubmit()">
         </div>
         <div class="filter-group">
           <label>👤 Agent</label>
-          <select name="agent">
+          <select name="agent" onchange="autoSubmit()">
             <option value="">All Agents</option>
             {% for ag in agents %}
             <option value="{{ ag }}" {% if f_agent==ag %}selected{% endif %}>{{ ag }}</option>
@@ -395,7 +395,7 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="filter-group">
           <label>📦 Product</label>
-          <select name="product">
+          <select name="product" onchange="autoSubmit()">
             <option value="">All Products</option>
             {% for pr in products %}
             <option value="{{ pr }}" {% if f_product==pr %}selected{% endif %}>{{ pr }}</option>
@@ -404,7 +404,7 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="filter-group">
           <label>🏷️ Status</label>
-          <select name="status">
+          <select name="status" onchange="autoSubmit()">
             <option value="">All Statuses</option>
             {% for st in statuses %}
             <option value="{{ st }}" {% if f_status==st %}selected{% endif %}>{{ st }}</option>
@@ -413,7 +413,7 @@ tr:last-child td{border-bottom:none}
         </div>
         <div class="filter-group">
           <label>💬 Suggestion Type</label>
-          <select name="sug_type">
+          <select name="sug_type" onchange="autoSubmit()">
             <option value="">All Types</option>
             <option value="Liked"      {% if f_sug_type=='Liked' %}selected{% endif %}>👍 Liked</option>
             <option value="Issue"      {% if f_sug_type=='Issue' %}selected{% endif %}>⚠️ Issue</option>
@@ -422,7 +422,6 @@ tr:last-child td{border-bottom:none}
           </select>
         </div>
         <div class="filter-actions">
-          <button type="submit" class="btn btn-primary">Apply</button>
           <a href="/?date_from={{ default_from }}&date_to={{ default_to }}" class="btn btn-secondary">Reset</a>
         </div>
       </div>
@@ -673,6 +672,8 @@ tr:last-child td{border-bottom:none}
 </div>
 
 <script>
+function autoSubmit(){ document.getElementById('filterForm').submit(); }
+
 // Calculate date string in YYYY-MM-DD
 function fmtDate(d){ return d.toISOString().split('T')[0]; }
 function daysAgo(n){ var d=new Date(); d.setDate(d.getDate()-n); return fmtDate(d); }
