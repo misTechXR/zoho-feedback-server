@@ -275,8 +275,9 @@ TEMPLATE = """<!DOCTYPE html>
 <title>TechXR Feedback Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+html,body{margin:0;padding:0;width:100%;overflow-x:hidden}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;color:#1a1a2e}
-.wrap{max-width:1200px;margin:0 auto;padding:20px}
+.wrap{width:100%;margin:0;padding:20px;box-sizing:border-box}
 .header{background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:24px 28px;margin-bottom:16px;color:#fff}
 .header h1{font-size:24px;font-weight:800}
 .header p{font-size:13px;opacity:.7;margin-top:4px}
@@ -285,9 +286,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 
 /* Quick date buttons */
 .quick-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.qbtn{padding:5px 12px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1.5px solid #e5e7eb;background:#fff;color:#6b7280;transition:all .15s}
-.qbtn:hover{border-color:#6366f1;color:#6366f1}
-.qbtn.active{background:#4f46e5;color:#fff;border-color:#4f46e5}
 
 /* Filter bar */
 .filter-bar{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
@@ -340,6 +338,13 @@ tr:last-child td{border-bottom:none}
 .pill-gray{background:#f3f4f6;color:#374151}
 .pill-yellow{background:#fef9c3;color:#854d0e}
 .pill-purple{background:#ede9fe;color:#6d28d9}
+.custom-dd{border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;font-size:12px;color:#374151;background:#fafafa;cursor:pointer;height:32px;display:flex;align-items:center;justify-content:space-between;user-select:none;}
+.custom-dd:hover{border-color:#6366f1;}
+.custom-dd-list{display:none;position:absolute;top:100%;left:0;min-width:220px;max-width:320px;max-height:260px;overflow-y:auto;background:#fff;border:1px solid #e5e7eb;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.1);z-index:999;margin-top:2px;}
+.custom-dd-list.open{display:block;}
+.custom-dd-item{padding:8px 12px;font-size:12px;color:#374151;cursor:pointer;white-space:normal;word-wrap:break-word;line-height:1.4;}
+.custom-dd-item:hover{background:#f5f3ff;color:#4f46e5;}
+.custom-dd-item.selected{background:#ede9fe;color:#6d28d9;font-weight:600;}
 .scrollable-table{max-height:400px;overflow-y:auto;border-radius:8px;border:1px solid #f3f4f6}
 .agent-bar{height:6px;border-radius:3px;background:#f3f4f6;overflow:hidden;margin-bottom:3px}
 .agent-bar-fill{height:6px;border-radius:3px}
@@ -350,7 +355,26 @@ tr:last-child td{border-bottom:none}
 .footer{text-align:center;margin-top:24px;padding:16px;color:#9ca3af;font-size:11px}
 .refresh-btn{display:inline-block;margin-left:12px;background:rgba(255,255,255,.2);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;text-decoration:none}
 .refresh-btn:hover{background:rgba(255,255,255,.3)}
-@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.filter-row{flex-direction:column}}
+@media(max-width:700px){
+  .cards{grid-template-columns:repeat(2,1fr)}
+  .grid2{grid-template-columns:1fr}
+  .filter-row{flex-direction:column;align-items:stretch}
+  .filter-group{width:100%}
+  .filter-group input,.filter-group select,.custom-dd{width:100%;max-width:100%!important;min-width:0!important}
+  .filter-actions{width:100%}
+  .filter-actions .btn{width:100%;text-align:center;justify-content:center}
+  .custom-dd-list{min-width:100%;max-width:100%}
+  .wrap{padding:12px}
+  .header{padding:16px}
+  .header h1{font-size:18px}
+  .pct-grid{grid-template-columns:repeat(3,1fr)}
+  .pct-num{font-size:16px}
+  .refer-card{flex-direction:column;gap:12px}
+  .refer-num{font-size:44px}
+  th,td{font-size:11px;padding:6px 7px}
+  .scrollable-table{overflow-x:auto}
+  .panel-title{font-size:10px}
+}
 </style>
 </head>
 <body>
@@ -371,40 +395,28 @@ tr:last-child td{border-bottom:none}
   <form method="GET" action="/" id="filterForm">
     <div class="filter-bar">
 
-      <!-- Date Type Toggle -->
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-        <span style="font-size:10px;font-weight:700;color:#9ca3af;">📅 DATE TYPE:</span>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;font-weight:600;color:{% if f_date_type=='created' %}#4f46e5{% else %}#9ca3af{% endif %}">
-          <input type="radio" name="date_type" value="created"
-            {% if f_date_type=='created' %}checked{% endif %}
-            onchange="autoSubmit()" style="accent-color:#4f46e5;">
-          Created Date
-        </label>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;font-weight:600;color:{% if f_date_type=='modified' %}#4f46e5{% else %}#9ca3af{% endif %}">
-          <input type="radio" name="date_type" value="modified"
-            {% if f_date_type=='modified' %}checked{% endif %}
-            onchange="autoSubmit()" style="accent-color:#4f46e5;">
-          Modified Date
-        </label>
-      </div>
-
-      <!-- Quick date buttons -->
-      <div class="quick-filters">
-        <span style="font-size:10px;font-weight:700;color:#9ca3af;align-self:center;margin-right:4px;">QUICK:</span>
-        <button type="button" class="qbtn {% if active_preset=='today' %}active{% endif %}"
-          onclick="setPreset('today')">Today</button>
-        <button type="button" class="qbtn {% if active_preset=='yesterday' %}active{% endif %}"
-          onclick="setPreset('yesterday')">Yesterday</button>
-        <button type="button" class="qbtn {% if active_preset=='7d' %}active{% endif %}"
-          onclick="setPreset('7d')">Last 7 Days</button>
-        <button type="button" class="qbtn {% if active_preset=='15d' %}active{% endif %}"
-          onclick="setPreset('15d')">Last 15 Days</button>
-        <button type="button" class="qbtn {% if active_preset=='30d' %}active{% endif %}"
-          onclick="setPreset('30d')">Last 30 Days</button>
-        <button type="button" class="qbtn {% if active_preset=='90d' %}active{% endif %}"
-          onclick="setPreset('90d')">Last 90 Days</button>
-        <button type="button" class="qbtn {% if active_preset=='all' %}active{% endif %}"
-          onclick="setPreset('all')">All Time</button>
+      <!-- Row 1: Quick Preset + Date Type dropdowns -->
+      <div class="filter-row" style="margin-bottom:10px;">
+        <div class="filter-group">
+          <label>⚡ Quick Preset</label>
+          <select id="presetSelect" onchange="setPreset(this.value)">
+            <option value="" {% if not active_preset %}selected{% endif %}>Custom Range</option>
+            <option value="today"     {% if active_preset=='today' %}selected{% endif %}>Today</option>
+            <option value="yesterday" {% if active_preset=='yesterday' %}selected{% endif %}>Yesterday</option>
+            <option value="7d"        {% if active_preset=='7d' %}selected{% endif %}>Last 7 Days</option>
+            <option value="15d"       {% if active_preset=='15d' %}selected{% endif %}>Last 15 Days</option>
+            <option value="30d"       {% if active_preset=='30d' %}selected{% endif %}>Last 30 Days</option>
+            <option value="90d"       {% if active_preset=='90d' %}selected{% endif %}>Last 90 Days</option>
+            <option value="all"       {% if active_preset=='all' %}selected{% endif %}>All Time</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>📅 Date Type</label>
+          <select name="date_type" onchange="autoSubmit()">
+            <option value="created"  {% if f_date_type=='created' %}selected{% endif %}>Created Date</option>
+            <option value="modified" {% if f_date_type=='modified' %}selected{% endif %}>Modified Date</option>
+          </select>
+        </div>
       </div>
 
       <!-- Filter inputs -->
@@ -445,14 +457,21 @@ tr:last-child td{border-bottom:none}
             <option value="Remark"     {% if f_sug_type=='Remark' %}selected{% endif %}>💬 Remark</option>
           </select>
         </div>
-        <div class="filter-group">
+        <div class="filter-group" style="position:relative;">
           <label>📦 Product</label>
-          <select name="product" onchange="autoSubmit()">
-            <option value="">All Products</option>
+          <input type="hidden" name="product" id="productVal" value="{{ f_product }}">
+          <div class="custom-dd" id="productDD" onclick="toggleDD(event)" style="min-width:160px;max-width:180px;">
+            <span id="productLabel">{{ f_product if f_product else 'All Products' }}</span>
+            <span style="float:right;color:#9ca3af;">▾</span>
+          </div>
+          <div class="custom-dd-list" id="productList">
+            <div class="custom-dd-item {% if not f_product %}selected{% endif %}"
+              onclick="selectProduct('')">All Products</div>
             {% for pr in products %}
-            <option value="{{ pr }}" {% if f_product==pr %}selected{% endif %}>{{ pr }}</option>
+            <div class="custom-dd-item {% if f_product==pr %}selected{% endif %}"
+              onclick="selectProduct('{{ pr }}')">{{ pr }}</div>
             {% endfor %}
-          </select>
+          </div>
         </div>
         <div class="filter-actions">
           <a href="/?date_from={{ default_from }}&date_to={{ default_to }}" class="btn btn-secondary">Reset</a>
@@ -717,6 +736,7 @@ function fmtDate(d){ return d.toISOString().split('T')[0]; }
 function daysAgo(n){ var d=new Date(); d.setDate(d.getDate()-n); return fmtDate(d); }
 
 function setPreset(p){
+  if(!p) return;
   var today = fmtDate(new Date());
   var from = '', to = today;
   if(p==='today')     { from=today; }
@@ -731,6 +751,26 @@ function setPreset(p){
   document.getElementById('preset').value    = p;
   document.getElementById('filterForm').submit();
 }
+
+// Custom Product dropdown
+function toggleDD(event){
+  if(event) event.stopPropagation();
+  document.getElementById('productList').classList.toggle('open');
+}
+function selectProduct(val){
+  document.getElementById('productVal').value = val;
+  document.getElementById('productLabel').textContent = val || 'All Products';
+  document.getElementById('productList').classList.remove('open');
+  autoSubmit();
+}
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e){
+  var dd = document.getElementById('productDD');
+  var list = document.getElementById('productList');
+  if(dd && list && !dd.contains(e.target) && !list.contains(e.target)){
+    list.classList.remove('open');
+  }
+});
 </script>
 </body>
 </html>"""

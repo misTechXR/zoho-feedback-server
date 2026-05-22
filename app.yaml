@@ -18,7 +18,7 @@ kind: wasmer.io/App.v0
 annotations:
   shipitcli.com/config:
     commands:
-      start: python -m uvicorn main:app --interface wsgi --host 0.0.0.0 --port 8080
+      start: uvicorn main:app --interface wsgi --host 0.0.0.0 --port 8080
     cross_platform: wasix_wasm32
     extra_dependencies: []
     framework: flask
