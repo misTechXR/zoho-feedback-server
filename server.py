@@ -97,7 +97,7 @@ def fetch_all_feedback(force_refresh=False):
     fields   = ("Name,Owner,Rating,Feedback_Status,Remarks,"
                 "What_most_you_like_about_the_app,Suggestion_for_improvement,"
                 "Issue,Would_You_Refer_Our_Product_to_Someone,Created_Time,"
-                "Product_Name")
+                "Modified_Time,Product_Name")
     all_recs = []
     page     = 1
     while True:
@@ -117,8 +117,9 @@ def fetch_all_feedback(force_refresh=False):
     return all_recs, False  # (records, from_cache)
 
 
-def get_record_date(r):
-    ct = r.get("Created_Time", "") or ""
+def get_record_date(r, date_type="created"):
+    field = "Modified_Time" if date_type == "modified" else "Created_Time"
+    ct = r.get(field, "") or ""
     return ct[:10] if len(ct) >= 10 else ""
 
 def get_owner_name(r):
@@ -135,7 +136,7 @@ def get_product(r):
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
 
-def compute_metrics(recs):
+def compute_metrics(recs, date_type="created"):
     total = len(recs)
 
     # Rating
@@ -230,7 +231,7 @@ def compute_metrics(recs):
         name  = r.get("Name") or "—"
         agent = get_owner_name(r)
         prod  = get_product(r)
-        date  = get_record_date(r)
+        date  = get_record_date(r, date_type)
         if r.get("What_most_you_like_about_the_app"):
             sug_rows.append({"name":name,"agent":agent,"product":prod,"date":date,
                              "type":"Liked","content":r["What_most_you_like_about_the_app"]})
@@ -370,6 +371,23 @@ tr:last-child td{border-bottom:none}
   <form method="GET" action="/" id="filterForm">
     <div class="filter-bar">
 
+      <!-- Date Type Toggle -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <span style="font-size:10px;font-weight:700;color:#9ca3af;">📅 DATE TYPE:</span>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;font-weight:600;color:{% if f_date_type=='created' %}#4f46e5{% else %}#9ca3af{% endif %}">
+          <input type="radio" name="date_type" value="created"
+            {% if f_date_type=='created' %}checked{% endif %}
+            onchange="autoSubmit()" style="accent-color:#4f46e5;">
+          Created Date
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px;font-weight:600;color:{% if f_date_type=='modified' %}#4f46e5{% else %}#9ca3af{% endif %}">
+          <input type="radio" name="date_type" value="modified"
+            {% if f_date_type=='modified' %}checked{% endif %}
+            onchange="autoSubmit()" style="accent-color:#4f46e5;">
+          Modified Date
+        </label>
+      </div>
+
       <!-- Quick date buttons -->
       <div class="quick-filters">
         <span style="font-size:10px;font-weight:700;color:#9ca3af;align-self:center;margin-right:4px;">QUICK:</span>
@@ -409,15 +427,6 @@ tr:last-child td{border-bottom:none}
           </select>
         </div>
         <div class="filter-group">
-          <label>📦 Product</label>
-          <select name="product" onchange="autoSubmit()">
-            <option value="">All Products</option>
-            {% for pr in products %}
-            <option value="{{ pr }}" {% if f_product==pr %}selected{% endif %}>{{ pr }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="filter-group">
           <label>🏷️ Status</label>
           <select name="status" onchange="autoSubmit()">
             <option value="">All Statuses</option>
@@ -434,6 +443,15 @@ tr:last-child td{border-bottom:none}
             <option value="Issue"      {% if f_sug_type=='Issue' %}selected{% endif %}>⚠️ Issue</option>
             <option value="Suggestion" {% if f_sug_type=='Suggestion' %}selected{% endif %}>💡 Suggestion</option>
             <option value="Remark"     {% if f_sug_type=='Remark' %}selected{% endif %}>💬 Remark</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>📦 Product</label>
+          <select name="product" onchange="autoSubmit()">
+            <option value="">All Products</option>
+            {% for pr in products %}
+            <option value="{{ pr }}" {% if f_product==pr %}selected{% endif %}>{{ pr }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="filter-actions">
@@ -617,7 +635,12 @@ tr:last-child td{border-bottom:none}
             <td style="font-weight:600;color:#111827;white-space:nowrap;">{{ r.Name or '—' }}</td>
             <td style="white-space:nowrap;color:#6b7280;">{{ r.Owner.name if r.Owner is mapping else '—' }}</td>
             <td style="white-space:nowrap;color:#0ea5e9;font-size:11px;">{{ r.Product_Name or '—' }}</td>
-            <td style="white-space:nowrap;color:#9ca3af;font-size:11px;">{{ r.Created_Time[:10] if r.Created_Time else '—' }}</td>
+            <td style="white-space:nowrap;color:#9ca3af;font-size:11px;">
+              {{ r.Created_Time[:10] if r.Created_Time else '—' }}
+              {% if r.Modified_Time and r.Modified_Time[:10] != (r.Created_Time or '')[:10] %}
+              <br><span style="color:#f59e0b;">✏️ {{ r.Modified_Time[:10] }}</span>
+              {% endif %}
+            </td>
             <td><span class="pill {{ 'pill-red' if r.Feedback_Status=='Not Satisfied' else 'pill-orange' }}">{{ r.Feedback_Status }}</span></td>
             <td style="color:#374151;">{{ r.Issue or '—' }}</td>
             <td style="color:#374151;">{{ r.Suggestion_for_improvement or '—' }}</td>
@@ -780,6 +803,7 @@ def index():
     f_product   = request.args.get("product",   "").strip()
     f_status    = request.args.get("status",    "").strip()
     f_sug_type  = request.args.get("sug_type",  "").strip()
+    f_date_type = request.args.get("date_type", "created").strip()  # "created" or "modified"
     active_preset = request.args.get("preset",  "").strip()
 
     # If no date filter at all (first load) → default to last 30 days
@@ -791,9 +815,9 @@ def index():
     # Apply filters to records
     filtered = recs
     if f_date_from:
-        filtered = [r for r in filtered if get_record_date(r) >= f_date_from]
+        filtered = [r for r in filtered if get_record_date(r, f_date_type) >= f_date_from]
     if f_date_to:
-        filtered = [r for r in filtered if get_record_date(r) <= f_date_to]
+        filtered = [r for r in filtered if get_record_date(r, f_date_type) <= f_date_to]
     if f_agent:
         filtered = [r for r in filtered if get_owner_name(r) == f_agent]
     if f_product:
@@ -801,7 +825,7 @@ def index():
     if f_status:
         filtered = [r for r in filtered if r.get("Feedback_Status") == f_status]
 
-    m = compute_metrics(filtered)
+    m = compute_metrics(filtered, f_date_type)
 
     # Filter suggestion rows by type
     if f_sug_type:
@@ -815,6 +839,7 @@ def index():
         f_date_from=f_date_from, f_date_to=f_date_to,
         f_agent=f_agent, f_product=f_product,
         f_status=f_status, f_sug_type=f_sug_type,
+        f_date_type=f_date_type,
         active_preset=active_preset,
         default_from=default_from, default_to=default_to,
         total_all=len(recs),
