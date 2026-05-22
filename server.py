@@ -14,7 +14,9 @@ app = Flask(__name__)
 
 # ── Zoho OAuth (cached — token valid for 1 hr, refresh after 50 min) ────────
 
-_token_cache = {"token": None, "expires_at": 0}
+_token_cache   = {"token": None, "expires_at": 0}
+_records_cache = {"data": None, "expires_at": 0}
+RECORDS_TTL    = 10 * 60  # cache records for 10 minutes
 
 def _fetch_new_token():
     """Fetch a fresh access token from Zoho and cache it."""
@@ -82,15 +84,22 @@ def zoho_get(url, headers, params):
 
 # ── Zoho CRM fetch ──────────────────────────────────────────────────────────
 
-def fetch_all_feedback():
-    headers = {"Authorization": f"Zoho-oauthtoken {get_access_token()}"}
-    base    = "https://www.zohoapis.in/crm/v2/Feedback"
-    fields  = ("Name,Owner,Rating,Feedback_Status,Remarks,"
-               "What_most_you_like_about_the_app,Suggestion_for_improvement,"
-               "Issue,Would_You_Refer_Our_Product_to_Someone,Created_Time,"
-               "Product_Name")
+def fetch_all_feedback(force_refresh=False):
+    now = datetime.now().timestamp()
+
+    # Return cached records if still fresh
+    if not force_refresh and _records_cache["data"] and now < _records_cache["expires_at"]:
+        return _records_cache["data"], True  # (records, from_cache)
+
+    # Fetch fresh from Zoho
+    headers  = {"Authorization": f"Zoho-oauthtoken {get_access_token()}"}
+    base     = "https://www.zohoapis.in/crm/v2/Feedback"
+    fields   = ("Name,Owner,Rating,Feedback_Status,Remarks,"
+                "What_most_you_like_about_the_app,Suggestion_for_improvement,"
+                "Issue,Would_You_Refer_Our_Product_to_Someone,Created_Time,"
+                "Product_Name")
     all_recs = []
-    page = 1
+    page     = 1
     while True:
         r = zoho_get(base, headers, {"fields": fields, "per_page": 200, "page": page})
         if r.status_code != 200:
@@ -101,7 +110,11 @@ def fetch_all_feedback():
         if not data.get("info", {}).get("more_records"):
             break
         page += 1
-    return all_recs
+
+    # Store in cache
+    _records_cache["data"]       = all_recs
+    _records_cache["expires_at"] = now + RECORDS_TTL
+    return all_recs, False  # (records, from_cache)
 
 
 def get_record_date(r):
@@ -346,8 +359,10 @@ tr:last-child td{border-bottom:none}
   <div class="header">
     <div class="header-meta">TechXR · Live Feedback Report</div>
     <h1>📊 Feedback Rating Dashboard</h1>
-    <p>{{ date_str }} &nbsp;·&nbsp; {{ m.total }} records shown of {{ total_all }} total &nbsp;·&nbsp;
-      <a href="/?date_from={{ default_from }}&date_to={{ default_to }}" class="refresh-btn">🔄 Refresh</a>
+    <p>{{ date_str }} &nbsp;·&nbsp; {{ m.total }} records shown of {{ total_all }} total</p>
+    <p style="font-size:11px;opacity:.6;margin-top:4px;">
+      📦 {{ cache_info }} &nbsp;·&nbsp;
+      <a href="/?refresh=1&date_from={{ f_date_from }}&date_to={{ f_date_to }}&agent={{ f_agent }}&product={{ f_product }}&status={{ f_status }}&sug_type={{ f_sug_type }}&preset={{ active_preset }}" class="refresh-btn">🔄 Force Refresh</a>
     </p>
   </div>
 
@@ -712,6 +727,19 @@ def debug():
     lines.append(f"ZOHO_CLIENT_SECRET : {'✅ SET (' + csec[:6] + '...)' if csec.strip() else '❌ MISSING'}")
     lines.append(f"ZOHO_REFRESH_TOKEN : {'✅ SET (' + rtok[:8] + '...)' if rtok.strip() else '❌ MISSING'}")
     lines.append("")
+    lines.append("<b>── Cache Status ──</b>")
+    now = datetime.now().timestamp()
+    if _records_cache["data"]:
+        remaining = max(0, int(_records_cache["expires_at"] - now))
+        lines.append(f"Records Cache  : ✅ {len(_records_cache['data'])} records · expires in {remaining//60}m {remaining%60}s")
+    else:
+        lines.append("Records Cache  : ⚪ Empty (will fetch on next request)")
+    if _token_cache["token"]:
+        remaining = max(0, int(_token_cache["expires_at"] - now))
+        lines.append(f"Token Cache    : ✅ Active · expires in {remaining//60}m {remaining%60}s")
+    else:
+        lines.append("Token Cache    : ⚪ Empty")
+    lines.append("")
     lines.append("<b>── Token Test ──</b>")
     try:
         _token_cache["token"] = None  # force fresh fetch
@@ -731,10 +759,14 @@ def index():
     default_from = (today - timedelta(days=29)).strftime("%Y-%m-%d")
     default_to   = today.strftime("%Y-%m-%d")
 
+    force_refresh = request.args.get("refresh") == "1"
     try:
-        recs = fetch_all_feedback()
+        recs, from_cache = fetch_all_feedback(force_refresh=force_refresh)
     except Exception as e:
         return f"<h2 style='color:red;font-family:sans-serif;padding:40px'>Error: {e}</h2>", 500
+
+    cache_expires_in = max(0, int(_records_cache["expires_at"] - datetime.now().timestamp()))
+    cache_info = f"Cached · refreshes in {cache_expires_in//60}m {cache_expires_in%60}s" if from_cache else "Live data fetched"
 
     # Unique filter options (from all records)
     agents   = sorted(set(get_owner_name(r) for r in recs))
@@ -785,7 +817,8 @@ def index():
         f_status=f_status, f_sug_type=f_sug_type,
         active_preset=active_preset,
         default_from=default_from, default_to=default_to,
-        total_all=len(recs)
+        total_all=len(recs),
+        cache_info=cache_info
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"]        = "no-cache"
