@@ -1,0 +1,17 @@
+kind: wasmer.io/App.v0
+name: techxr-feedback-server
+
+package: .
+
+env:
+  PORT: "8080"
+
+cli_args:
+  - "uvicorn"
+  - "main:app"
+  - "--interface"
+  - "wsgi"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8080"
