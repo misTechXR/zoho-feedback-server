@@ -1,17 +1,37 @@
-kind: wasmer.io/App.v0
 name: techxr-feedback-server
-
+app_id: da_R36ILtlUZNld
+owner: mistechxr
 package: .
-
 env:
-  PORT: "8080"
-
+  PORT: '8080'
 cli_args:
-  - "uvicorn"
-  - "main:app"
-  - "--interface"
-  - "wsgi"
-  - "--host"
-  - "0.0.0.0"
-  - "--port"
-  - "8080"
+- -m
+- uvicorn
+- main:app
+- --interface
+- wsgi
+- --host
+- 0.0.0.0
+- --port
+- '8080'
+kind: wasmer.io/App.v0
+annotations:
+  shipitcli.com/config:
+    commands:
+      start: python -m uvicorn main:app --interface wsgi --host 0.0.0.0 --port 8080
+    cross_platform: wasix_wasm32
+    extra_dependencies: []
+    framework: flask
+    install_requires_all_files: false
+    main_file: main.py
+    port: 8080
+    precompile_python: true
+    python_extra_index_url: https://pythonindex.wasix.org/simple
+    python_version: '3.13'
+    server: uvicorn
+    uses_ffmpeg: false
+    uses_pandoc: false
+    uv_version: 0.8.15
+    wsgi_application: main:app
+  shipitcli.com/provider: python
+  shipitcli.com/version: 0.19.8
