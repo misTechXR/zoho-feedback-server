@@ -1,9 +1,10 @@
 """
 TechXR Feedback Dashboard Server
-Fetches live Zoho CRM data and serves the dashboard on localhost.
+Fetches live Zoho CRM data and serves the dashboard.
 """
 
-import os, json, math, requests
+import os, requests
+from datetime import datetime, timedelta
 from flask import Flask, render_template_string, request, make_response
 from dotenv import load_dotenv
 
@@ -31,7 +32,8 @@ def fetch_all_feedback(token):
     base    = "https://www.zohoapis.in/crm/v2/Feedback"
     fields  = ("Name,Owner,Rating,Feedback_Status,Remarks,"
                "What_most_you_like_about_the_app,Suggestion_for_improvement,"
-               "Issue,Would_You_Refer_Our_Product_to_Someone,Created_Time")
+               "Issue,Would_You_Refer_Our_Product_to_Someone,Created_Time,"
+               "Product_Name")
     all_recs = []
     page = 1
     while True:
@@ -50,15 +52,19 @@ def fetch_all_feedback(token):
 
 
 def get_record_date(r):
-    """Extract YYYY-MM-DD from Created_Time field."""
     ct = r.get("Created_Time", "") or ""
     return ct[:10] if len(ct) >= 10 else ""
 
-
 def get_owner_name(r):
     owner = r.get("Owner") or {}
-    name = owner.get("name") if isinstance(owner, dict) else "Unassigned"
+    name  = owner.get("name") if isinstance(owner, dict) else "Unassigned"
     return name or "Unassigned"
+
+def get_product(r):
+    p = r.get("Product_Name") or ""
+    if isinstance(p, dict):
+        return p.get("name", "") or "—"
+    return str(p).strip() or "—"
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
@@ -73,15 +79,12 @@ def compute_metrics(recs):
         try:
             v = int(r.get("Rating") or 0)
             if 1 <= v <= 5:
-                r_counts[v] += 1
-                r_sum += v
-                r_n += 1
-        except:
-            pass
+                r_counts[v] += 1; r_sum += v; r_n += 1
+        except: pass
     avg_r = round(r_sum / r_n, 1) if r_n else None
     max_r = max(r_counts.values()) or 1
 
-    # Status
+    # Status counts
     s_counts = {}
     for r in recs:
         s = r.get("Feedback_Status") or "Unknown"
@@ -100,18 +103,13 @@ def compute_metrics(recs):
     ref_yes = ref_no = ref_maybe = ref_answered = 0
     for r in recs:
         vals = r.get("Would_You_Refer_Our_Product_to_Someone")
-        if not vals:
-            continue
+        if not vals: continue
         ref_answered += 1
-        flat = ((" ".join(vals) if isinstance(vals, list) else str(vals))).lower()
-        if any(x in flat for x in ["yes","definitely","absolutely"]):
-            ref_yes += 1
-        elif "no" in flat and "not sure" not in flat:
-            ref_no += 1
-        elif any(x in flat for x in ["maybe","not sure","possibly"]):
-            ref_maybe += 1
-        else:
-            ref_yes += 1
+        flat = (" ".join(vals) if isinstance(vals, list) else str(vals)).lower()
+        if any(x in flat for x in ["yes","definitely","absolutely"]): ref_yes += 1
+        elif "no" in flat and "not sure" not in flat: ref_no += 1
+        elif any(x in flat for x in ["maybe","not sure","possibly"]): ref_maybe += 1
+        else: ref_yes += 1
 
     # Agent-wise
     agent_map = {}
@@ -121,42 +119,66 @@ def compute_metrics(recs):
             agent_map[name] = {"name": name, "total": 0, "satisfied": 0,
                                "not_sat": 0, "issue_r": 0, "in_followup": 0,
                                "new_f": 0, "critical": 0}
-        a = agent_map[name]
-        a["total"] += 1
-        status = r.get("Feedback_Status", "")
-        if status == "Satisfied":       a["satisfied"] += 1
-        elif status == "Not Satisfied": a["not_sat"] += 1
-        elif status == "Issue Raised":  a["issue_r"] += 1
-        elif status == "In Followup":   a["in_followup"] += 1
-        elif status == "New Feedback":  a["new_f"] += 1
+        a = agent_map[name]; a["total"] += 1
+        st = r.get("Feedback_Status", "")
+        if st == "Satisfied":       a["satisfied"] += 1
+        elif st == "Not Satisfied": a["not_sat"] += 1
+        elif st == "Issue Raised":  a["issue_r"] += 1
+        elif st == "In Followup":   a["in_followup"] += 1
+        elif st == "New Feedback":  a["new_f"] += 1
         a["critical"] = a["not_sat"] + a["issue_r"]
-
     agent_list = sorted(agent_map.values(), key=lambda x: x["total"], reverse=True)
 
-    # Critical recs
+    # Product-wise
+    product_map = {}
+    for r in recs:
+        prod = get_product(r)
+        if prod not in product_map:
+            product_map[prod] = {"name": prod, "total": 0, "satisfied": 0,
+                                 "not_sat": 0, "issue_r": 0, "in_followup": 0,
+                                 "new_f": 0, "critical": 0, "r_sum": 0, "r_n": 0}
+        p = product_map[prod]; p["total"] += 1
+        st = r.get("Feedback_Status", "")
+        if st == "Satisfied":       p["satisfied"] += 1
+        elif st == "Not Satisfied": p["not_sat"] += 1
+        elif st == "Issue Raised":  p["issue_r"] += 1
+        elif st == "In Followup":   p["in_followup"] += 1
+        elif st == "New Feedback":  p["new_f"] += 1
+        p["critical"] = p["not_sat"] + p["issue_r"]
+        try:
+            v = int(r.get("Rating") or 0)
+            if 1 <= v <= 5: p["r_sum"] += v; p["r_n"] += 1
+        except: pass
+    for p in product_map.values():
+        p["avg_r"] = round(p["r_sum"] / p["r_n"], 1) if p["r_n"] else None
+        p["sat_pct"] = round(p["satisfied"] / p["total"] * 100) if p["total"] else 0
+    product_list = sorted(product_map.values(), key=lambda x: x["total"], reverse=True)
+
+    # Critical records
     crit_recs = [r for r in recs if r.get("Feedback_Status") in ("Not Satisfied", "Issue Raised")]
 
-    # Suggestions — flatten into rows for table
-    skip = {"cnr","busy","n/a","na","no","none"}
+    # Suggestions flat rows
+    skip = {"cnr","busy","n/a","na","no","none",""}
     sug_rows = []
     for r in recs:
         name  = r.get("Name") or "—"
         agent = get_owner_name(r)
+        prod  = get_product(r)
         date  = get_record_date(r)
         if r.get("What_most_you_like_about_the_app"):
-            sug_rows.append({"name": name, "agent": agent, "date": date,
-                             "type": "Liked", "content": r["What_most_you_like_about_the_app"]})
+            sug_rows.append({"name":name,"agent":agent,"product":prod,"date":date,
+                             "type":"Liked","content":r["What_most_you_like_about_the_app"]})
         if r.get("Issue"):
-            sug_rows.append({"name": name, "agent": agent, "date": date,
-                             "type": "Issue", "content": r["Issue"]})
+            sug_rows.append({"name":name,"agent":agent,"product":prod,"date":date,
+                             "type":"Issue","content":r["Issue"]})
         if r.get("Suggestion_for_improvement") and \
            r["Suggestion_for_improvement"].strip().lower() not in ["na","n/a","no improvement","none",""]:
-            sug_rows.append({"name": name, "agent": agent, "date": date,
-                             "type": "Suggestion", "content": r["Suggestion_for_improvement"]})
+            sug_rows.append({"name":name,"agent":agent,"product":prod,"date":date,
+                             "type":"Suggestion","content":r["Suggestion_for_improvement"]})
         if r.get("Remarks") and len(r["Remarks"]) > 5 and \
            r["Remarks"].strip().lower() not in skip:
-            sug_rows.append({"name": name, "agent": agent, "date": date,
-                             "type": "Remark", "content": r["Remarks"]})
+            sug_rows.append({"name":name,"agent":agent,"product":prod,"date":date,
+                             "type":"Remark","content":r["Remarks"]})
 
     return {
         "total": total,
@@ -169,6 +191,7 @@ def compute_metrics(recs):
         "ref_yes": ref_yes, "ref_no": ref_no, "ref_maybe": ref_maybe,
         "ref_answered": ref_answered,
         "agent_list": agent_list,
+        "product_list": product_list,
         "crit_recs": crit_recs,
         "sug_rows": sug_rows,
         "s_counts": s_counts,
@@ -186,24 +209,32 @@ TEMPLATE = """<!DOCTYPE html>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;color:#1a1a2e}
-.wrap{max-width:1100px;margin:0 auto;padding:20px}
-.header{background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:24px 28px;margin-bottom:20px;color:#fff}
+.wrap{max-width:1200px;margin:0 auto;padding:20px}
+.header{background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;padding:24px 28px;margin-bottom:16px;color:#fff}
 .header h1{font-size:24px;font-weight:800}
 .header p{font-size:13px;opacity:.7;margin-top:4px}
 .header-meta{font-size:11px;color:#c4b5fd;text-transform:uppercase;letter-spacing:2px;margin-bottom:6px}
 .section-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#6b7280;margin:20px 0 10px;padding-left:2px}
 
-/* Filter Bar */
-.filter-bar{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.06);display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+/* Quick date buttons */
+.quick-filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.qbtn{padding:5px 12px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1.5px solid #e5e7eb;background:#fff;color:#6b7280;transition:all .15s}
+.qbtn:hover{border-color:#6366f1;color:#6366f1}
+.qbtn.active{background:#4f46e5;color:#fff;border-color:#4f46e5}
+
+/* Filter bar */
+.filter-bar{background:#fff;border-radius:10px;padding:14px 18px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.filter-row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
 .filter-group{display:flex;flex-direction:column;gap:4px}
 .filter-group label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#6b7280}
-.filter-group input,.filter-group select{border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;font-size:12px;color:#374151;background:#fafafa;outline:none}
+.filter-group input,.filter-group select{border:1px solid #e5e7eb;border-radius:6px;padding:6px 10px;font-size:12px;color:#374151;background:#fafafa;outline:none;height:32px}
 .filter-group input:focus,.filter-group select:focus{border-color:#6366f1;background:#fff}
 .filter-actions{display:flex;gap:8px;align-items:flex-end}
-.btn{padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none}
+.btn{padding:6px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none;height:32px}
 .btn-primary{background:#4f46e5;color:#fff}
-.btn-secondary{background:#f3f4f6;color:#374151}
-.filter-badge{font-size:11px;color:#6366f1;font-weight:600;align-self:flex-end;padding-bottom:7px}
+.btn-secondary{background:#f3f4f6;color:#374151;text-decoration:none;display:inline-flex;align-items:center}
+.active-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6}
+.active-tag{display:inline-block;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px}
 
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:4px}
 .card{background:#fff;border-radius:10px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
@@ -228,8 +259,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .r{background:#fee2e2;color:#991b1b}
 .b{background:#dbeafe;color:#1e40af}
 .stacked-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;margin-bottom:8px}
-.bar-seg{height:10px}
-.bar-rest{flex:1;background:#e5e7eb}
+.bar-seg{height:10px}.bar-rest{flex:1;background:#e5e7eb}
 .meta-line{font-size:11px;color:#6b7280}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:9px 10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#9ca3af;border-bottom:2px solid #f3f4f6;background:#fafafa;position:sticky;top:0;z-index:1}
@@ -243,17 +273,17 @@ tr:last-child td{border-bottom:none}
 .pill-gray{background:#f3f4f6;color:#374151}
 .pill-yellow{background:#fef9c3;color:#854d0e}
 .pill-purple{background:#ede9fe;color:#6d28d9}
-.scrollable-table{max-height:420px;overflow-y:auto;border-radius:8px;border:1px solid #f3f4f6}
+.scrollable-table{max-height:400px;overflow-y:auto;border-radius:8px;border:1px solid #f3f4f6}
+.agent-bar{height:6px;border-radius:3px;background:#f3f4f6;overflow:hidden;margin-bottom:3px}
+.agent-bar-fill{height:6px;border-radius:3px}
+.perf{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;display:inline-block}
 .refer-card{display:flex;align-items:center;gap:24px;background:#fff;border-radius:10px;padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .refer-num{font-size:60px;font-weight:800;color:#7c3aed;line-height:1}
 .refer-stats{font-size:13px;color:#6b7280;line-height:2.2}
-.agent-bar{height:6px;border-radius:3px;background:#f3f4f6;overflow:hidden;margin-bottom:3px}
-.agent-bar-fill{height:6px;border-radius:3px;background:#22c55e}
-.perf{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;display:inline-block}
 .footer{text-align:center;margin-top:24px;padding:16px;color:#9ca3af;font-size:11px}
-.refresh-btn{display:inline-block;margin-left:12px;background:#4f46e5;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;text-decoration:none}
-.active-filter-tag{display:inline-block;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px}
-@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.pct-grid{grid-template-columns:repeat(3,1fr)}.filter-bar{flex-direction:column}}
+.refresh-btn{display:inline-block;margin-left:12px;background:rgba(255,255,255,.2);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;text-decoration:none}
+.refresh-btn:hover{background:rgba(255,255,255,.3)}
+@media(max-width:700px){.cards{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.filter-row{flex-direction:column}}
 </style>
 </head>
 <body>
@@ -263,61 +293,112 @@ tr:last-child td{border-bottom:none}
   <div class="header">
     <div class="header-meta">TechXR · Live Feedback Report</div>
     <h1>📊 Feedback Rating Dashboard</h1>
-    <p>{{ date_str }} &nbsp;·&nbsp; {{ m.total }} records shown of {{ total_all }} total &nbsp;·&nbsp; <a href="/" class="refresh-btn">🔄 Refresh</a></p>
+    <p>{{ date_str }} &nbsp;·&nbsp; {{ m.total }} records shown of {{ total_all }} total &nbsp;·&nbsp;
+      <a href="/?date_from={{ default_from }}&date_to={{ default_to }}" class="refresh-btn">🔄 Refresh</a>
+    </p>
   </div>
 
-  <!-- FILTER BAR -->
-  <form method="GET" action="/">
+  <!-- FILTERS -->
+  <form method="GET" action="/" id="filterForm">
     <div class="filter-bar">
-      <div class="filter-group">
-        <label>📅 Date From</label>
-        <input type="date" name="date_from" value="{{ f_date_from }}">
+
+      <!-- Quick date buttons -->
+      <div class="quick-filters">
+        <span style="font-size:10px;font-weight:700;color:#9ca3af;align-self:center;margin-right:4px;">QUICK:</span>
+        <button type="button" class="qbtn {% if active_preset=='today' %}active{% endif %}"
+          onclick="setPreset('today')">Today</button>
+        <button type="button" class="qbtn {% if active_preset=='yesterday' %}active{% endif %}"
+          onclick="setPreset('yesterday')">Yesterday</button>
+        <button type="button" class="qbtn {% if active_preset=='7d' %}active{% endif %}"
+          onclick="setPreset('7d')">Last 7 Days</button>
+        <button type="button" class="qbtn {% if active_preset=='15d' %}active{% endif %}"
+          onclick="setPreset('15d')">Last 15 Days</button>
+        <button type="button" class="qbtn {% if active_preset=='30d' %}active{% endif %}"
+          onclick="setPreset('30d')">Last 30 Days</button>
+        <button type="button" class="qbtn {% if active_preset=='90d' %}active{% endif %}"
+          onclick="setPreset('90d')">Last 90 Days</button>
+        <button type="button" class="qbtn {% if active_preset=='all' %}active{% endif %}"
+          onclick="setPreset('all')">All Time</button>
       </div>
-      <div class="filter-group">
-        <label>📅 Date To</label>
-        <input type="date" name="date_to" value="{{ f_date_to }}">
+
+      <!-- Filter inputs -->
+      <div class="filter-row">
+        <div class="filter-group">
+          <label>📅 Date From</label>
+          <input type="date" name="date_from" id="date_from" value="{{ f_date_from }}">
+        </div>
+        <div class="filter-group">
+          <label>📅 Date To</label>
+          <input type="date" name="date_to" id="date_to" value="{{ f_date_to }}">
+        </div>
+        <div class="filter-group">
+          <label>👤 Agent</label>
+          <select name="agent">
+            <option value="">All Agents</option>
+            {% for ag in agents %}
+            <option value="{{ ag }}" {% if f_agent==ag %}selected{% endif %}>{{ ag }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>📦 Product</label>
+          <select name="product">
+            <option value="">All Products</option>
+            {% for pr in products %}
+            <option value="{{ pr }}" {% if f_product==pr %}selected{% endif %}>{{ pr }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>🏷️ Status</label>
+          <select name="status">
+            <option value="">All Statuses</option>
+            {% for st in statuses %}
+            <option value="{{ st }}" {% if f_status==st %}selected{% endif %}>{{ st }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>💬 Suggestion Type</label>
+          <select name="sug_type">
+            <option value="">All Types</option>
+            <option value="Liked"      {% if f_sug_type=='Liked' %}selected{% endif %}>👍 Liked</option>
+            <option value="Issue"      {% if f_sug_type=='Issue' %}selected{% endif %}>⚠️ Issue</option>
+            <option value="Suggestion" {% if f_sug_type=='Suggestion' %}selected{% endif %}>💡 Suggestion</option>
+            <option value="Remark"     {% if f_sug_type=='Remark' %}selected{% endif %}>💬 Remark</option>
+          </select>
+        </div>
+        <div class="filter-actions">
+          <button type="submit" class="btn btn-primary">Apply</button>
+          <a href="/?date_from={{ default_from }}&date_to={{ default_to }}" class="btn btn-secondary">Reset</a>
+        </div>
       </div>
-      <div class="filter-group">
-        <label>👤 Agent</label>
-        <select name="agent">
-          <option value="">All Agents</option>
-          {% for ag in agents %}
-          <option value="{{ ag }}" {% if f_agent == ag %}selected{% endif %}>{{ ag }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="filter-group">
-        <label>🏷️ Status</label>
-        <select name="status">
-          <option value="">All Statuses</option>
-          {% for st in statuses %}
-          <option value="{{ st }}" {% if f_status == st %}selected{% endif %}>{{ st }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="filter-actions">
-        <button type="submit" class="btn btn-primary">Apply Filters</button>
-        <a href="/" class="btn btn-secondary">Clear</a>
-      </div>
-      {% if f_date_from or f_date_to or f_agent or f_status %}
-      <div class="filter-badge">
-        🔍 Filtered
-        {% if f_agent %}<span class="active-filter-tag">{{ f_agent }}</span>{% endif %}
-        {% if f_status %}<span class="active-filter-tag">{{ f_status }}</span>{% endif %}
-        {% if f_date_from %}<span class="active-filter-tag">From {{ f_date_from }}</span>{% endif %}
-        {% if f_date_to %}<span class="active-filter-tag">To {{ f_date_to }}</span>{% endif %}
+
+      <!-- Active filter tags -->
+      {% if f_agent or f_product or f_status or f_sug_type %}
+      <div class="active-tags">
+        <span style="font-size:10px;color:#9ca3af;align-self:center;">Active:</span>
+        {% if f_agent %}<span class="active-tag">👤 {{ f_agent }}</span>{% endif %}
+        {% if f_product %}<span class="active-tag">📦 {{ f_product }}</span>{% endif %}
+        {% if f_status %}<span class="active-tag">🏷️ {{ f_status }}</span>{% endif %}
+        {% if f_sug_type %}<span class="active-tag">💬 {{ f_sug_type }}</span>{% endif %}
+        <span class="active-tag" style="background:#dbeafe;color:#1e40af;">
+          📅 {{ f_date_from or '—' }} → {{ f_date_to or '—' }}
+        </span>
       </div>
       {% endif %}
     </div>
+    <!-- Hidden preset field -->
+    <input type="hidden" name="preset" id="preset" value="{{ active_preset }}">
   </form>
 
-  <!-- OVERVIEW -->
+  <!-- OVERVIEW CARDS -->
   <div class="section-label">📈 Overview</div>
   <div class="cards">
     <div class="card" style="border-top:3px solid #8b5cf6">
       <div class="card-label">📋 Total Records</div>
       <div class="card-val">{{ m.total }}</div>
-      <div class="card-sub">Matching records</div>
+      <div class="card-sub">of {{ total_all }} total</div>
     </div>
     <div class="card" style="border-top:3px solid #7c3aed">
       <div class="card-label">⭐ Avg Rating</div>
@@ -337,19 +418,19 @@ tr:last-child td{border-bottom:none}
   </div>
 
   <!-- RATING + CALL ANALYSIS -->
-  <div class="section-label">⭐ Rating Dashboard &amp; 📞 Call Analysis</div>
+  <div class="section-label">⭐ Rating Distribution &amp; 📞 Call Analysis</div>
   <div class="grid2">
     <div class="panel">
       <div class="panel-title">⭐ Rating Distribution</div>
       {% for i in [5,4,3,2,1] %}
-      {% set colors = {5:'#22c55e',4:'#84cc16',3:'#f59e0b',2:'#f97316',1:'#ef4444'} %}
+      {% set colors={5:'#22c55e',4:'#84cc16',3:'#f59e0b',2:'#f97316',1:'#ef4444'} %}
       <div class="rb-row">
         <div class="rb-label">{{ i }}★</div>
         <div class="rb-track"><div class="rb-fill" style="width:{{ m.r_pct[i] }}%;background:{{ colors[i] }};"></div></div>
         <div class="rb-count">{{ m.r_counts[i] }}</div>
       </div>
       {% endfor %}
-      <div style="font-size:10px;color:#9ca3af;margin-top:6px;">{{ m.r_n }} of {{ m.total }} records rated</div>
+      <div style="font-size:10px;color:#9ca3af;margin-top:6px;">{{ m.r_n }} of {{ m.total }} rated</div>
     </div>
     <div class="panel">
       <div class="panel-title">📞 Call Analysis — % by Outcome</div>
@@ -376,7 +457,7 @@ tr:last-child td{border-bottom:none}
         <div class="bar-seg" style="width:{{ m.followup_pct }}%;background:#3b82f6;"></div>
         <div class="bar-rest"></div>
       </div>
-      <div class="meta-line">New Feedback (pending): <strong>{{ m.new_f }}</strong> &nbsp;|&nbsp; In Follow-up: <strong>{{ m.in_followup }}</strong></div>
+      <div class="meta-line">New Feedback: <strong>{{ m.new_f }}</strong> &nbsp;|&nbsp; In Follow-up: <strong>{{ m.in_followup }}</strong></div>
     </div>
   </div>
 
@@ -387,13 +468,14 @@ tr:last-child td{border-bottom:none}
       <table>
         <thead><tr>
           <th>Agent</th><th>Total</th><th>Satisfied</th><th>Critical</th>
-          <th>Follow-up</th><th>New</th><th style="min-width:120px;">Performance</th>
+          <th>Follow-up</th><th>New</th><th style="min-width:130px;">Performance</th>
         </tr></thead>
         <tbody>
         {% for a in m.agent_list %}
-        {% set a_sat_pct = (a.satisfied / a.total * 100)|round|int if a.total else 0 %}
-        {% set perf_color = '#059669' if a_sat_pct >= 60 else ('#d97706' if a_sat_pct >= 30 else '#dc2626') %}
-        {% set perf_bg = '#f0fdf4' if a_sat_pct >= 60 else ('#fffbeb' if a_sat_pct >= 30 else '#fef2f2') %}
+        {% set sp=(a.satisfied/a.total*100)|round|int if a.total else 0 %}
+        {% set pc='#059669' if sp>=60 else ('#d97706' if sp>=30 else '#dc2626') %}
+        {% set pb='#f0fdf4' if sp>=60 else ('#fffbeb' if sp>=30 else '#fef2f2') %}
+        {% set fc='#22c55e' if sp>=60 else ('#f59e0b' if sp>=30 else '#ef4444') %}
         <tr>
           <td style="font-weight:600;color:#111827;white-space:nowrap;">{{ a.name }}</td>
           <td style="text-align:center;font-weight:700;">{{ a.total }}</td>
@@ -402,8 +484,8 @@ tr:last-child td{border-bottom:none}
           <td style="text-align:center;"><span class="pill pill-blue">{{ a.in_followup }}</span></td>
           <td style="text-align:center;"><span class="pill pill-gray">{{ a.new_f }}</span></td>
           <td>
-            <div class="agent-bar"><div class="agent-bar-fill" style="width:{{ a_sat_pct }}%;"></div></div>
-            <span class="perf" style="color:{{ perf_color }};background:{{ perf_bg }};">{{ a_sat_pct }}% satisfied</span>
+            <div class="agent-bar"><div class="agent-bar-fill" style="width:{{ sp }}%;background:{{ fc }};"></div></div>
+            <span class="perf" style="color:{{ pc }};background:{{ pb }};">{{ sp }}% satisfied</span>
           </td>
         </tr>
         {% endfor %}
@@ -412,16 +494,54 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 
-  <!-- CALL FOR ACTION -->
+  <!-- PRODUCT-WISE SATISFACTION -->
+  <div class="section-label" style="border-left:3px solid #0ea5e9;padding-left:10px;">📦 Product-Wise Satisfaction</div>
+  <div class="panel" style="padding:0;">
+    <div class="scrollable-table">
+      <table>
+        <thead><tr>
+          <th>Product</th><th>Total</th><th>Avg ⭐</th><th>Satisfied</th>
+          <th>Critical</th><th>Follow-up</th><th>New</th><th style="min-width:130px;">Satisfaction</th>
+        </tr></thead>
+        <tbody>
+        {% if m.product_list %}
+          {% for p in m.product_list %}
+          {% set sp=p.sat_pct %}
+          {% set pc='#059669' if sp>=60 else ('#d97706' if sp>=30 else '#dc2626') %}
+          {% set pb='#f0fdf4' if sp>=60 else ('#fffbeb' if sp>=30 else '#fef2f2') %}
+          {% set fc='#22c55e' if sp>=60 else ('#f59e0b' if sp>=30 else '#ef4444') %}
+          <tr>
+            <td style="font-weight:600;color:#111827;white-space:nowrap;">{{ p.name }}</td>
+            <td style="text-align:center;font-weight:700;">{{ p.total }}</td>
+            <td style="text-align:center;color:#7c3aed;font-weight:700;">{{ p.avg_r or '—' }}</td>
+            <td style="text-align:center;"><span class="pill pill-green">{{ p.satisfied }}</span></td>
+            <td style="text-align:center;"><span class="pill pill-red">{{ p.critical }}</span></td>
+            <td style="text-align:center;"><span class="pill pill-blue">{{ p.in_followup }}</span></td>
+            <td style="text-align:center;"><span class="pill pill-gray">{{ p.new_f }}</span></td>
+            <td>
+              <div class="agent-bar"><div class="agent-bar-fill" style="width:{{ sp }}%;background:{{ fc }};"></div></div>
+              <span class="perf" style="color:{{ pc }};background:{{ pb }};">{{ sp }}% satisfied</span>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="8" style="text-align:center;color:#9ca3af;padding:20px;">No product data available. Check if "Product_Name" field exists in Zoho CRM.</td></tr>
+        {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- CRITICAL LEADS -->
   <div class="section-label" style="border-left:3px solid #dc2626;padding-left:10px;">
-    🚨 Call for Action — Critical Leads
-    <span class="pill pill-red" style="margin-left:8px;">{{ m.critical }}</span>
+    🚨 Critical Leads <span class="pill pill-red" style="margin-left:8px;">{{ m.critical }}</span>
   </div>
   <div class="panel" style="padding:0;">
     <div class="scrollable-table">
       <table>
         <thead><tr>
-          <th>Lead Name</th><th>Agent</th><th>Date</th><th>Status</th><th>Issue Reported</th><th>Suggestion</th><th>Remarks</th>
+          <th>Lead</th><th>Agent</th><th>Product</th><th>Date</th>
+          <th>Status</th><th>Issue</th><th>Suggestion</th><th>Remarks</th>
         </tr></thead>
         <tbody>
         {% if m.crit_recs %}
@@ -429,31 +549,33 @@ tr:last-child td{border-bottom:none}
           <tr>
             <td style="font-weight:600;color:#111827;white-space:nowrap;">{{ r.Name or '—' }}</td>
             <td style="white-space:nowrap;color:#6b7280;">{{ r.Owner.name if r.Owner is mapping else '—' }}</td>
+            <td style="white-space:nowrap;color:#0ea5e9;font-size:11px;">{{ r.Product_Name or '—' }}</td>
             <td style="white-space:nowrap;color:#9ca3af;font-size:11px;">{{ r.Created_Time[:10] if r.Created_Time else '—' }}</td>
-            <td><span class="pill {{ 'pill-red' if r.Feedback_Status == 'Not Satisfied' else 'pill-orange' }}">{{ r.Feedback_Status }}</span></td>
+            <td><span class="pill {{ 'pill-red' if r.Feedback_Status=='Not Satisfied' else 'pill-orange' }}">{{ r.Feedback_Status }}</span></td>
             <td style="color:#374151;">{{ r.Issue or '—' }}</td>
             <td style="color:#374151;">{{ r.Suggestion_for_improvement or '—' }}</td>
             <td style="color:#6b7280;">{{ r.Remarks or '—' }}</td>
           </tr>
           {% endfor %}
         {% else %}
-          <tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:20px;">🎉 No critical issues found!</td></tr>
+          <tr><td colspan="8" style="text-align:center;color:#9ca3af;padding:20px;">🎉 No critical issues!</td></tr>
         {% endif %}
         </tbody>
       </table>
     </div>
   </div>
 
-  <!-- SUGGESTIONS SUMMARY — scrollable table -->
+  <!-- SUGGESTIONS SUMMARY -->
   <div class="section-label">💬 Suggestions Summary
-    <span style="font-size:10px;color:#9ca3af;font-weight:400;text-transform:none;letter-spacing:0;margin-left:6px;">{{ m.sug_rows|length }} entries</span>
+    <span style="font-size:10px;color:#9ca3af;font-weight:400;text-transform:none;margin-left:6px;">{{ m.sug_rows|length }} entries</span>
   </div>
   <div class="panel" style="padding:0;">
     <div class="scrollable-table">
       <table>
         <thead><tr>
-          <th style="min-width:120px;">Lead Name</th>
+          <th style="min-width:120px;">Lead</th>
           <th style="min-width:110px;">Agent</th>
+          <th style="min-width:110px;">Product</th>
           <th style="min-width:90px;">Date</th>
           <th style="min-width:90px;">Type</th>
           <th>Content</th>
@@ -461,25 +583,21 @@ tr:last-child td{border-bottom:none}
         <tbody>
         {% if m.sug_rows %}
           {% for row in m.sug_rows %}
-          {% if row.type == 'Liked' %}
-            {% set pill_cls = 'pill-green' %}{% set icon = '👍' %}
-          {% elif row.type == 'Issue' %}
-            {% set pill_cls = 'pill-red' %}{% set icon = '⚠️' %}
-          {% elif row.type == 'Suggestion' %}
-            {% set pill_cls = 'pill-yellow' %}{% set icon = '💡' %}
-          {% else %}
-            {% set pill_cls = 'pill-purple' %}{% set icon = '💬' %}
-          {% endif %}
+          {% if row.type=='Liked' %}{% set pc='pill-green' %}{% set ic='👍' %}
+          {% elif row.type=='Issue' %}{% set pc='pill-red' %}{% set ic='⚠️' %}
+          {% elif row.type=='Suggestion' %}{% set pc='pill-yellow' %}{% set ic='💡' %}
+          {% else %}{% set pc='pill-purple' %}{% set ic='💬' %}{% endif %}
           <tr>
             <td style="font-weight:600;color:#111827;white-space:nowrap;">{{ row.name }}</td>
             <td style="color:#6b7280;white-space:nowrap;">{{ row.agent }}</td>
+            <td style="color:#0ea5e9;font-size:11px;white-space:nowrap;">{{ row.product }}</td>
             <td style="color:#9ca3af;font-size:11px;white-space:nowrap;">{{ row.date or '—' }}</td>
-            <td><span class="pill {{ pill_cls }}">{{ icon }} {{ row.type }}</span></td>
+            <td><span class="pill {{ pc }}">{{ ic }} {{ row.type }}</span></td>
             <td style="color:#374151;line-height:1.5;">{{ row.content }}</td>
           </tr>
           {% endfor %}
         {% else %}
-          <tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">No suggestions or remarks recorded yet.</td></tr>
+          <tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:20px;">No suggestions recorded.</td></tr>
         {% endif %}
         </tbody>
       </table>
@@ -498,11 +616,30 @@ tr:last-child td{border-bottom:none}
     </div>
   </div>
 
-  <div class="footer">
-    TechXR Feedback Dashboard &nbsp;·&nbsp; Data from Zoho CRM &nbsp;·&nbsp; {{ m.total }} records shown
-  </div>
-
+  <div class="footer">TechXR Feedback Dashboard · Zoho CRM · {{ m.total }} records shown</div>
 </div>
+
+<script>
+// Calculate date string in YYYY-MM-DD
+function fmtDate(d){ return d.toISOString().split('T')[0]; }
+function daysAgo(n){ var d=new Date(); d.setDate(d.getDate()-n); return fmtDate(d); }
+
+function setPreset(p){
+  var today = fmtDate(new Date());
+  var from = '', to = today;
+  if(p==='today')     { from=today; }
+  else if(p==='yesterday'){ var y=new Date(); y.setDate(y.getDate()-1); from=fmtDate(y); to=fmtDate(y); }
+  else if(p==='7d')   { from=daysAgo(6); }
+  else if(p==='15d')  { from=daysAgo(14); }
+  else if(p==='30d')  { from=daysAgo(29); }
+  else if(p==='90d')  { from=daysAgo(89); }
+  else if(p==='all')  { from=''; to=''; }
+  document.getElementById('date_from').value = from;
+  document.getElementById('date_to').value   = to;
+  document.getElementById('preset').value    = p;
+  document.getElementById('filterForm').submit();
+}
+</script>
 </body>
 </html>"""
 
@@ -511,24 +648,37 @@ tr:last-child td{border-bottom:none}
 
 @app.route("/")
 def index():
-    from datetime import datetime
+    today        = datetime.now()
+    default_from = (today - timedelta(days=29)).strftime("%Y-%m-%d")
+    default_to   = today.strftime("%Y-%m-%d")
+
     try:
         token = get_access_token()
         recs  = fetch_all_feedback(token)
     except Exception as e:
-        return f"<h2 style='color:red;font-family:sans-serif;padding:40px'>Error fetching data: {e}</h2>", 500
+        return f"<h2 style='color:red;font-family:sans-serif;padding:40px'>Error: {e}</h2>", 500
 
-    # Unique filter options
+    # Unique filter options (from all records)
     agents   = sorted(set(get_owner_name(r) for r in recs))
+    products = sorted(set(get_product(r) for r in recs if get_product(r) != "—"))
     statuses = sorted(set(r.get("Feedback_Status") or "Unknown" for r in recs))
 
-    # Read filters from query params
+    # Read filters — default to last 30 days if nothing is set
     f_date_from = request.args.get("date_from", "").strip()
-    f_date_to   = request.args.get("date_to", "").strip()
-    f_agent     = request.args.get("agent", "").strip()
-    f_status    = request.args.get("status", "").strip()
+    f_date_to   = request.args.get("date_to",   "").strip()
+    f_agent     = request.args.get("agent",     "").strip()
+    f_product   = request.args.get("product",   "").strip()
+    f_status    = request.args.get("status",    "").strip()
+    f_sug_type  = request.args.get("sug_type",  "").strip()
+    active_preset = request.args.get("preset",  "").strip()
 
-    # Apply filters
+    # If no date filter at all (first load) → default to last 30 days
+    if not f_date_from and not f_date_to and "date_from" not in request.args:
+        f_date_from   = default_from
+        f_date_to     = default_to
+        active_preset = "30d"
+
+    # Apply filters to records
     filtered = recs
     if f_date_from:
         filtered = [r for r in filtered if get_record_date(r) >= f_date_from]
@@ -536,20 +686,29 @@ def index():
         filtered = [r for r in filtered if get_record_date(r) <= f_date_to]
     if f_agent:
         filtered = [r for r in filtered if get_owner_name(r) == f_agent]
+    if f_product:
+        filtered = [r for r in filtered if get_product(r) == f_product]
     if f_status:
         filtered = [r for r in filtered if r.get("Feedback_Status") == f_status]
 
-    m        = compute_metrics(filtered)
-    date_str = datetime.now().strftime("%A, %d %B %Y · %I:%M %p")
+    m = compute_metrics(filtered)
+
+    # Filter suggestion rows by type
+    if f_sug_type:
+        m["sug_rows"] = [s for s in m["sug_rows"] if s["type"] == f_sug_type]
+
+    date_str = today.strftime("%A, %d %B %Y · %I:%M %p")
 
     resp = make_response(render_template_string(
         TEMPLATE, m=m, date_str=date_str,
-        agents=agents, statuses=statuses,
+        agents=agents, products=products, statuses=statuses,
         f_date_from=f_date_from, f_date_to=f_date_to,
-        f_agent=f_agent, f_status=f_status,
+        f_agent=f_agent, f_product=f_product,
+        f_status=f_status, f_sug_type=f_sug_type,
+        active_preset=active_preset,
+        default_from=default_from, default_to=default_to,
         total_all=len(recs)
     ))
-    # Prevent caching — always serve fresh data
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"]        = "no-cache"
     resp.headers["Expires"]       = "0"
