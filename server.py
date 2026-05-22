@@ -12,9 +12,12 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# ── Zoho OAuth ──────────────────────────────────────────────────────────────
+# ── Zoho OAuth (cached — token valid for 1 hr, refresh after 50 min) ────────
 
-def get_access_token():
+_token_cache = {"token": None, "expires_at": 0}
+
+def _fetch_new_token():
+    """Fetch a fresh access token from Zoho and cache it."""
     resp = requests.post("https://accounts.zoho.in/oauth/v2/token", data={
         "grant_type":    "refresh_token",
         "client_id":     os.getenv("ZOHO_CLIENT_ID"),
@@ -22,13 +25,40 @@ def get_access_token():
         "refresh_token": os.getenv("ZOHO_REFRESH_TOKEN"),
     })
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    token = resp.json()["access_token"]
+    _token_cache["token"]      = token
+    _token_cache["expires_at"] = datetime.now().timestamp() + 50 * 60
+    return token
+
+def get_access_token():
+    """Return cached token if valid, else fetch a new one."""
+    now = datetime.now().timestamp()
+    if _token_cache["token"] and now < _token_cache["expires_at"]:
+        return _token_cache["token"]
+    return _fetch_new_token()
+
+def get_access_token_with_retry(headers):
+    """Call Zoho API with auto token refresh if 401 is returned."""
+    token = get_access_token()
+    headers["Authorization"] = f"Zoho-oauthtoken {token}"
+    return headers
+
+def zoho_get(url, headers, params):
+    """GET request with automatic token expiry retry."""
+    r = requests.get(url, headers=headers, params=params)
+    if r.status_code == 401:
+        # Token expired mid-session — force refresh and retry once
+        _token_cache["token"] = None
+        token = _fetch_new_token()
+        headers["Authorization"] = f"Zoho-oauthtoken {token}"
+        r = requests.get(url, headers=headers, params=params)
+    return r
 
 
 # ── Zoho CRM fetch ──────────────────────────────────────────────────────────
 
-def fetch_all_feedback(token):
-    headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+def fetch_all_feedback():
+    headers = {"Authorization": f"Zoho-oauthtoken {get_access_token()}"}
     base    = "https://www.zohoapis.in/crm/v2/Feedback"
     fields  = ("Name,Owner,Rating,Feedback_Status,Remarks,"
                "What_most_you_like_about_the_app,Suggestion_for_improvement,"
@@ -37,9 +67,7 @@ def fetch_all_feedback(token):
     all_recs = []
     page = 1
     while True:
-        r = requests.get(base, headers=headers, params={
-            "fields": fields, "per_page": 200, "page": page
-        })
+        r = zoho_get(base, headers, {"fields": fields, "per_page": 200, "page": page})
         if r.status_code != 200:
             break
         data = r.json()
@@ -653,8 +681,7 @@ def index():
     default_to   = today.strftime("%Y-%m-%d")
 
     try:
-        token = get_access_token()
-        recs  = fetch_all_feedback(token)
+        recs = fetch_all_feedback()
     except Exception as e:
         return f"<h2 style='color:red;font-family:sans-serif;padding:40px'>Error: {e}</h2>", 500
 
